@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { RefreshCw, Activity, Gauge, Zap, ZoomIn, ZoomOut, Play, Pause, Calendar } from 'lucide-react';
+import { RefreshCw, Activity, Gauge, Zap, ZoomIn, ZoomOut, Play, Pause, Calendar, AlertCircle } from 'lucide-react';
 import {
   ResponsiveContainer,
   LineChart,
@@ -36,9 +36,50 @@ interface EquipmentData {
   is_simulation?: boolean;
 }
 
+interface TimeSeriesData {
+  time: string;
+  fullTime: string;
+  timestamp: number;
+  vibration_x: number;
+  vibration_y: number;
+  vibration_z: number;
+  vx_rms: number;
+  vy_rms: number;
+  pressure: number;
+  current_value: number;
+}
+
+interface PSDDataPoint {
+  frequency: number;
+  psd: number;
+}
+
+interface ZoomedPSDData {
+  vx: PSDDataPoint[];
+  vy: PSDDataPoint[];
+}
+
+// Couleurs
+const colors = {
+  vibrationX: '#2E86AB',
+  vibrationY: '#A23B72', 
+  vibrationZ: '#F18F01',
+  vxRMS: '#2E86AB',
+  vyRMS: '#A23B72',
+  pressure: '#C73E1D',
+  current: '#3F88C5',
+  psdVX: '#2E86AB',
+  psdVY: '#A23B72'
+};
+
+type DataMode = 'realtime' | 'historical';
+type ApiStatus = 'online' | 'offline' | 'checking';
+type ZoomDirection = 'in' | 'out';
+type DateDirection = 'prev' | 'next';
+
 const Equipment: React.FC = () => {
   const [data, setData] = useState<EquipmentData[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
   const [error, setError] = useState<string>('');
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
@@ -47,47 +88,87 @@ const Equipment: React.FC = () => {
   const [zoomLevel, setZoomLevel] = useState<number>(1);
   const [availableDates, setAvailableDates] = useState<string[]>([]);
   const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
-  const [dataMode, setDataMode] = useState<'realtime' | 'historical'>('realtime');
+  const [dataMode, setDataMode] = useState<DataMode>('realtime');
+  const [apiStatus, setApiStatus] = useState<ApiStatus>('checking');
 
-  // Couleurs
-  const colors = {
-    vibrationX: '#2E86AB',
-    vibrationY: '#A23B72', 
-    vibrationZ: '#F18F01',
-    vxRMS: '#2E86AB',
-    vyRMS: '#A23B72',
-    pressure: '#C73E1D',
-    current: '#3F88C5',
-    psdVX: '#2E86AB',
-    psdVY: '#A23B72'
-  };
-
-  // Récupère les dates disponibles automatiquement
-  const fetchAvailableDates = useCallback(async () => {
+  // Vérifier le statut de l'API
+  const checkApiStatus = useCallback(async (): Promise<boolean> => {
     try {
-      console.log('📅 Chargement automatique des dates...');
-      const response = await fetch('http://localhost:5000/api/dates');
+      const response = await fetch('http://localhost:5000/api/health');
       if (response.ok) {
-        const dates = await response.json();
-        setAvailableDates(dates);
-        console.log(`✅ Dates disponibles: ${dates.length} dates`);
-        
-        // Sélectionner automatiquement aujourd'hui si disponible
-        const today = new Date().toISOString().split('T')[0];
-        if (dates.includes(today)) {
-          setSelectedDate(today);
-          setDataMode('realtime');
-        }
+        setApiStatus('online');
+        return true;
+      } else {
+        setApiStatus('offline');
+        return false;
       }
     } catch (error) {
+      setApiStatus('offline');
+      return false;
+    }
+  }, []);
+
+  // Récupère les dates disponibles automatiquement
+  const fetchAvailableDates = useCallback(async (): Promise<void> => {
+    try {
+      console.log('📅 Chargement des dates disponibles...');
+      setError('');
+      
+      // Essayer plusieurs endpoints possibles
+      const endpoints: string[] = [
+        '/api/dates',
+        '/api/simulation/dates', 
+        '/api/all-dates'
+      ];
+      
+      let dates: string[] = [];
+      let success = false;
+      
+      for (const endpoint of endpoints) {
+        try {
+          const response = await fetch(`http://localhost:5000${endpoint}`);
+          if (response.ok) {
+            dates = await response.json();
+            console.log(`✅ Dates chargées depuis ${endpoint}: ${dates.length} dates`);
+            success = true;
+            break;
+          }
+        } catch (error) {
+          console.log(`❌ Endpoint ${endpoint} non disponible`);
+        }
+      }
+      
+      if (!success) {
+        // Fallback: créer des dates simulées
+        const today = new Date().toISOString().split('T')[0];
+        const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+        dates = [
+          today, 
+          yesterday,
+          '2025-11-27', '2025-11-26', '2025-11-25', 
+          '2025-11-24', '2025-11-23', '2025-11-22',
+          '2025-11-21', '2025-11-20', '2025-11-19'
+        ];
+        console.log('📅 Dates simulées utilisées');
+      }
+      
+      setAvailableDates(dates);
+      
+      // Sélectionner aujourd'hui par défaut
+      const today = new Date().toISOString().split('T')[0];
+      if (dates.includes(today)) {
+        setSelectedDate(today);
+        setDataMode('realtime');
+      }
+      
+    } catch (error) {
       console.error('❌ Erreur chargement dates:', error);
-      // Dates par défaut en cas d'erreur
-      setAvailableDates([new Date().toISOString().split('T')[0]]);
+      setError('Impossible de charger les dates disponibles');
     }
   }, []);
 
   // Récupère les données selon le mode
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (): Promise<void> => {
     try {
       setError('');
       setIsLoading(true);
@@ -110,7 +191,7 @@ const Equipment: React.FC = () => {
         throw new Error(`Erreur HTTP ${response.status}`);
       }
       
-      const apiData = await response.json();
+      const apiData: EquipmentData[] = await response.json();
       console.log(`✅ ${apiData.length} points reçus (${dataMode})`);
       
       if (apiData.length > 0) {
@@ -125,24 +206,28 @@ const Equipment: React.FC = () => {
         console.log('📊 Première donnée:', {
           time: new Date(first.timestamp).toLocaleString(),
           vx: first.vibration_x,
-          source: first.source
+          source: first.source || 'unknown'
         });
       } else {
         setData([]);
         console.warn('⚠️ Aucune donnée reçue');
+        setError('Aucune donnée disponible pour cette date');
       }
       
       setLastUpdate(new Date());
+      setApiStatus('online');
+      
     } catch (error) {
-      console.error('❌ Erreur chargement:', error);
-      setError(`Erreur: ${error instanceof Error ? error.message : 'Inconnue'}`);
+      console.error('❌ Erreur chargement données:', error);
+      setError(`Impossible de charger les données: ${error instanceof Error ? error.message : 'Erreur inconnue'}`);
+      setApiStatus('offline');
     } finally {
       setIsLoading(false);
     }
   }, [selectedDate, dataMode]);
 
   // Données filtrées par plage horaire
-  const filteredData = useMemo(() => {
+  const filteredData = useMemo((): EquipmentData[] => {
     if (data.length === 0) return [];
     
     try {
@@ -153,25 +238,28 @@ const Equipment: React.FC = () => {
       const endTime = new Date(startTime);
       endTime.setHours(selectedHour + Math.ceil(timeRange / 60), 0, 0, 0);
       
-      const filtered = data.filter(item => {
+      console.log(`🔍 Filtrage: ${startTime.toLocaleString()} -> ${endTime.toLocaleString()}`);
+      
+      const filtered = data.filter((item: EquipmentData) => {
         try {
           const itemDate = new Date(item.timestamp);
           return itemDate >= startTime && itemDate <= endTime;
         } catch (e) {
+          console.warn('❌ Erreur parsing timestamp:', item.timestamp);
           return false;
         }
       });
       
-      console.log(`🔍 ${filtered.length} points après filtrage`);
+      console.log(`📊 ${filtered.length} points après filtrage`);
       return filtered;
     } catch (error) {
-      console.error('❌ Erreur filtrage:', error);
+      console.error('❌ Erreur lors du filtrage:', error);
       return data;
     }
   }, [data, selectedDate, selectedHour, timeRange]);
 
   // Appliquer le zoom
-  const zoomedData = useMemo(() => {
+  const zoomedData = useMemo((): EquipmentData[] => {
     if (zoomLevel === 1) return filteredData;
     
     const dataLength = filteredData.length;
@@ -180,28 +268,30 @@ const Equipment: React.FC = () => {
     const takeCount = Math.max(1, Math.floor(dataLength / zoomLevel));
     const startIndex = Math.floor((dataLength - takeCount) / 2);
     
-    return filteredData.slice(startIndex, startIndex + takeCount);
+    const zoomed = filteredData.slice(startIndex, startIndex + takeCount);
+    console.log(`🔍 Zoom ${zoomLevel}x: ${dataLength} -> ${zoomed.length} points`);
+    return zoomed;
   }, [filteredData, zoomLevel]);
 
   // Données PSD combinées
-  const zoomedPSDData = useMemo(() => {
+  const zoomedPSDData = useMemo((): ZoomedPSDData => {
     if (zoomedData.length === 0) return { vx: [], vy: [] };
     
-    const sampleSize = Math.min(zoomedData.length, 20);
+    const sampleSize = Math.min(zoomedData.length, Math.max(10, Math.floor(zoomedData.length * 0.1)));
     const step = Math.max(1, Math.floor(zoomedData.length / sampleSize));
     
-    const sampledData = [];
+    const sampledData: EquipmentData[] = [];
     for (let i = 0; i < zoomedData.length; i += step) {
       if (sampledData.length >= sampleSize) break;
       sampledData.push(zoomedData[i]);
     }
     
-    const combinedPSDVX = [];
-    const combinedPSDVY = [];
+    const combinedPSDVX: PSDDataPoint[] = [];
+    const combinedPSDVY: PSDDataPoint[] = [];
     
-    sampledData.forEach(item => {
-      if (item.spectrum_vx?.freqs && item.spectrum_vx?.psd) {
-        item.spectrum_vx.freqs.forEach((freq, index) => {
+    sampledData.forEach((item: EquipmentData) => {
+      if (item.spectrum_vx && item.spectrum_vx.freqs && item.spectrum_vx.psd) {
+        item.spectrum_vx.freqs.forEach((freq: number, index: number) => {
           const existing = combinedPSDVX.find(p => p.frequency === Number(freq.toFixed(1)));
           if (existing) {
             existing.psd = Math.max(existing.psd, item.spectrum_vx.psd[index] || 1e-12);
@@ -214,8 +304,8 @@ const Equipment: React.FC = () => {
         });
       }
       
-      if (item.spectrum_vy?.freqs && item.spectrum_vy?.psd) {
-        item.spectrum_vy.freqs.forEach((freq, index) => {
+      if (item.spectrum_vy && item.spectrum_vy.freqs && item.spectrum_vy.psd) {
+        item.spectrum_vy.freqs.forEach((freq: number, index: number) => {
           const existing = combinedPSDVY.find(p => p.frequency === Number(freq.toFixed(1)));
           if (existing) {
             existing.psd = Math.max(existing.psd, item.spectrum_vy.psd[index] || 1e-12);
@@ -229,15 +319,21 @@ const Equipment: React.FC = () => {
       }
     });
     
+    // Trier par fréquence
     combinedPSDVX.sort((a, b) => a.frequency - b.frequency);
     combinedPSDVY.sort((a, b) => a.frequency - b.frequency);
     
-    return { vx: combinedPSDVX, vy: combinedPSDVY };
+    console.log(`📊 PSD VX: ${combinedPSDVX.length} points, PSD VY: ${combinedPSDVY.length} points`);
+    
+    return {
+      vx: combinedPSDVX,
+      vy: combinedPSDVY
+    };
   }, [zoomedData]);
 
   // Données séries temporelles
-  const timeSeriesData = useMemo(() => {
-    return zoomedData.map(item => {
+  const timeSeriesData = useMemo((): TimeSeriesData[] => {
+    return zoomedData.map((item: EquipmentData) => {
       try {
         return {
           time: new Date(item.timestamp).toLocaleTimeString('fr-FR', { 
@@ -256,13 +352,14 @@ const Equipment: React.FC = () => {
           current_value: item.current_value
         };
       } catch (err) {
+        console.warn('❌ Erreur conversion timestamp:', item.timestamp, err);
         return null;
       }
-    }).filter(item => item !== null);
+    }).filter((item): item is TimeSeriesData => item !== null);
   }, [zoomedData]);
 
   // Format PSD
-  const formatPSDValue = (value) => {
+  const formatPSDValue = (value: number): string => {
     if (value >= 1) return value.toFixed(2);
     if (value >= 0.01) return value.toFixed(4);
     if (value >= 0.0001) return value.toFixed(6);
@@ -270,7 +367,7 @@ const Equipment: React.FC = () => {
   };
 
   // Navigation dates
-  const navigateDate = (direction) => {
+  const navigateDate = (direction: DateDirection): void => {
     const currentIndex = availableDates.indexOf(selectedDate);
     if (currentIndex === -1) return;
     
@@ -282,7 +379,7 @@ const Equipment: React.FC = () => {
   };
 
   // Zoom
-  const handleZoom = (direction) => {
+  const handleZoom = (direction: ZoomDirection): void => {
     setZoomLevel(prev => {
       if (direction === 'in') {
         return Math.min(prev * 2, 8);
@@ -293,12 +390,16 @@ const Equipment: React.FC = () => {
   };
 
   // Heures disponibles
-  const hours = Array.from({ length: 24 }, (_, i) => i);
+  const hours: number[] = Array.from({ length: 24 }, (_, i) => i);
 
   // Effets
   useEffect(() => {
-    fetchAvailableDates();
-  }, [fetchAvailableDates]);
+    const initializeApp = async (): Promise<void> => {
+      await checkApiStatus();
+      await fetchAvailableDates();
+    };
+    initializeApp();
+  }, [checkApiStatus, fetchAvailableDates]);
 
   useEffect(() => {
     fetchData();
@@ -312,7 +413,7 @@ const Equipment: React.FC = () => {
   }, [fetchData, autoRefresh, selectedDate]);
 
   // Dernières valeurs
-  const lastValues = zoomedData.length > 0 ? zoomedData[zoomedData.length - 1] : null;
+  const lastValues: EquipmentData | null = zoomedData.length > 0 ? zoomedData[zoomedData.length - 1] : null;
 
   if (isLoading && data.length === 0) {
     return (
@@ -321,27 +422,11 @@ const Equipment: React.FC = () => {
           <RefreshCw className="w-12 h-12 text-blue-600 animate-spin mx-auto mb-4" />
           <h2 className="text-xl font-semibold text-gray-800">Chargement des données...</h2>
           <p className="text-gray-600 mt-2">Connexion à l'API FactoryEYE</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (error && data.length === 0) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="bg-white p-8 rounded-lg shadow-lg text-center max-w-md">
-          <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
-            <Zap className="w-6 h-6 text-red-600" />
+          <div className="mt-4 text-sm text-gray-500">
+            Statut API: <span className={`font-semibold ${apiStatus === 'online' ? 'text-green-600' : 'text-red-600'}`}>
+              {apiStatus === 'online' ? '✅ En ligne' : apiStatus === 'offline' ? '❌ Hors ligne' : '🔄 Vérification...'}
+            </span>
           </div>
-          <h2 className="text-xl font-semibold text-gray-800 mb-2">Erreur de connexion</h2>
-          <p className="text-gray-600 mb-4">{error}</p>
-          <button
-            onClick={fetchData}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2 mx-auto"
-          >
-            <RefreshCw className="w-4 h-4" />
-            Réessayer
-          </button>
         </div>
       </div>
     );
@@ -353,9 +438,20 @@ const Equipment: React.FC = () => {
       <div className="bg-white rounded-lg shadow p-4">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
           <div>
-            <h1 className="text-2xl font-bold text-gray-800">
-              🏭 Surveillance {dataMode === 'realtime' ? 'Temps Réel' : 'Historique'}
-            </h1>
+            <div className="flex items-center gap-3 mb-2">
+              <h1 className="text-2xl font-bold text-gray-800">
+                🏭 Surveillance {dataMode === 'realtime' ? 'Temps Réel' : 'Historique'}
+              </h1>
+              <div className={`px-2 py-1 rounded text-xs font-semibold ${
+                apiStatus === 'online' ? 'bg-green-100 text-green-800' : 
+                apiStatus === 'offline' ? 'bg-red-100 text-red-800' : 
+                'bg-yellow-100 text-yellow-800'
+              }`}>
+                {apiStatus === 'online' ? '✅ En ligne' : 
+                 apiStatus === 'offline' ? '❌ Hors ligne' : 
+                 '🔄 Vérification'}
+              </div>
+            </div>
             <p className="text-gray-600">
               {zoomedData.length} points • {dataMode === 'realtime' ? 'Rafraîchissement auto: 60s' : 'Données fixes'}
               {zoomLevel !== 1 && ` • Zoom: ${zoomLevel}x`}
@@ -368,9 +464,13 @@ const Equipment: React.FC = () => {
             </div>
             <button
               onClick={() => setAutoRefresh(!autoRefresh)}
+              disabled={dataMode === 'historical'}
               className={`px-4 py-2 rounded-lg flex items-center gap-2 ${
-                autoRefresh ? 'bg-green-600 text-white' : 'bg-gray-300 text-gray-700'
-              }`}
+                autoRefresh && dataMode === 'realtime' 
+                  ? 'bg-green-600 text-white' 
+                  : 'bg-gray-300 text-gray-700'
+              } ${dataMode === 'historical' ? 'opacity-50 cursor-not-allowed' : ''}`}
+              title={dataMode === 'historical' ? 'Rafraîchissement auto seulement en mode temps réel' : ''}
             >
               {autoRefresh ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
               {autoRefresh ? 'Auto ON' : 'Auto OFF'}
@@ -394,15 +494,16 @@ const Equipment: React.FC = () => {
                 onClick={() => navigateDate('prev')}
                 disabled={availableDates.indexOf(selectedDate) >= availableDates.length - 1}
                 className="px-3 py-1 bg-gray-200 rounded hover:bg-gray-300 disabled:opacity-50"
+                title="Date précédente"
               >
                 ←
               </button>
               <select
                 value={selectedDate}
-                onChange={(e) => setSelectedDate(e.target.value)}
+                onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setSelectedDate(e.target.value)}
                 className="flex-1 px-3 py-1 border rounded"
               >
-                {availableDates.map(date => (
+                {availableDates.map((date: string) => (
                   <option key={date} value={date}>
                     {date} {date === new Date().toISOString().split('T')[0] ? '(Aujourd\'hui)' : ''}
                   </option>
@@ -412,6 +513,7 @@ const Equipment: React.FC = () => {
                 onClick={() => navigateDate('next')}
                 disabled={availableDates.indexOf(selectedDate) <= 0}
                 className="px-3 py-1 bg-gray-200 rounded hover:bg-gray-300 disabled:opacity-50"
+                title="Date suivante"
               >
                 →
               </button>
@@ -425,10 +527,10 @@ const Equipment: React.FC = () => {
             <label className="text-sm font-medium text-gray-700 mb-1">Heure de départ</label>
             <select
               value={selectedHour}
-              onChange={(e) => setSelectedHour(Number(e.target.value))}
+              onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setSelectedHour(Number(e.target.value))}
               className="px-3 py-1 border rounded"
             >
-              {hours.map(hour => (
+              {hours.map((hour: number) => (
                 <option key={hour} value={hour}>
                   {hour.toString().padStart(2, '0')}:00
                 </option>
@@ -440,13 +542,14 @@ const Equipment: React.FC = () => {
             <label className="text-sm font-medium text-gray-700 mb-1">Plage temporelle</label>
             <select
               value={timeRange}
-              onChange={(e) => setTimeRange(Number(e.target.value))}
+              onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setTimeRange(Number(e.target.value))}
               className="px-3 py-1 border rounded"
             >
               <option value={30}>30 min</option>
               <option value={60}>1 heure</option>
               <option value={120}>2 heures</option>
               <option value={240}>4 heures</option>
+              <option value={480}>8 heures</option>
             </select>
           </div>
 
@@ -456,12 +559,14 @@ const Equipment: React.FC = () => {
               <button
                 onClick={() => handleZoom('out')}
                 className="flex-1 px-3 py-1 bg-gray-200 rounded hover:bg-gray-300 flex items-center justify-center"
+                title="Zoom arrière"
               >
                 <ZoomOut className="w-4 h-4" />
               </button>
               <button
                 onClick={() => handleZoom('in')}
                 className="flex-1 px-3 py-1 bg-gray-200 rounded hover:bg-gray-300 flex items-center justify-center"
+                title="Zoom avant"
               >
                 <ZoomIn className="w-4 h-4" />
               </button>
@@ -479,6 +584,9 @@ const Equipment: React.FC = () => {
             <div className="text-2xl font-bold text-blue-600">
               {lastValues ? lastValues.vibration_x.toFixed(4) : '0.0000'}
             </div>
+            <div className="text-xs text-blue-600 mt-1">
+              {dataMode === 'realtime' ? 'Temps réel' : 'Historique'}
+            </div>
           </div>
 
           <div className="bg-purple-50 p-4 rounded-lg border border-purple-200">
@@ -489,6 +597,9 @@ const Equipment: React.FC = () => {
             <div className="text-2xl font-bold text-purple-600">
               {lastValues ? lastValues.vibration_y.toFixed(4) : '0.0000'}
             </div>
+            <div className="text-xs text-purple-600 mt-1">
+              {lastValues?.source || 'Source inconnue'}
+            </div>
           </div>
 
           <div className="bg-red-50 p-4 rounded-lg border border-red-200">
@@ -497,7 +608,10 @@ const Equipment: React.FC = () => {
               <span className="font-semibold text-red-800">Pression</span>
             </div>
             <div className="text-2xl font-bold text-red-600">
-              {lastValues ? lastValues.pressure.toFixed(1) + ' bar' : '0.0 bar'}
+              {lastValues ? `${lastValues.pressure.toFixed(1)} bar` : '0.0 bar'}
+            </div>
+            <div className="text-xs text-red-600 mt-1">
+              Plage: 4.0 - 8.0 bar
             </div>
           </div>
 
@@ -507,22 +621,40 @@ const Equipment: React.FC = () => {
               <span className="font-semibold text-green-800">Courant</span>
             </div>
             <div className="text-2xl font-bold text-green-600">
-              {lastValues ? lastValues.current_value.toFixed(1) + ' A' : '0.0 A'}
+              {lastValues ? `${lastValues.current_value.toFixed(1)} A` : '0.0 A'}
+            </div>
+            <div className="text-xs text-green-600 mt-1">
+              Plage: 8.0 - 16.0 A
             </div>
           </div>
         </div>
 
         {/* Message d'erreur */}
         {error && (
-          <div className="mt-4 p-3 bg-yellow-100 border border-yellow-400 text-yellow-700 rounded">
-            <strong>Attention:</strong> {error}
+          <div className="mt-4 p-3 bg-yellow-100 border border-yellow-400 text-yellow-700 rounded flex items-start gap-2">
+            <AlertCircle className="w-5 h-5 mt-0.5 flex-shrink-0" />
+            <div>
+              <strong>Attention:</strong> {error}
+            </div>
           </div>
         )}
 
         {/* Informations de débogage */}
         <div className="mt-4 p-3 bg-gray-100 rounded text-xs">
-          <strong>Debug:</strong> Mode: {dataMode} | Données: {data.length} | Filtrées: {filteredData.length} | Zoomées: {zoomedData.length} | 
-          PSD VX: {zoomedPSDData.vx.length} | PSD VY: {zoomedPSDData.vy.length}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            <div><strong>Mode:</strong> {dataMode}</div>
+            <div><strong>Données:</strong> {data.length}</div>
+            <div><strong>Filtrées:</strong> {filteredData.length}</div>
+            <div><strong>Zoomées:</strong> {zoomedData.length}</div>
+            <div><strong>PSD VX:</strong> {zoomedPSDData.vx.length} pts</div>
+            <div><strong>PSD VY:</strong> {zoomedPSDData.vy.length} pts</div>
+            <div><strong>Date:</strong> {selectedDate}</div>
+            <div><strong>API:</strong> 
+              <span className={apiStatus === 'online' ? 'text-green-600' : 'text-red-600'}>
+                {apiStatus}
+              </span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -548,8 +680,8 @@ const Equipment: React.FC = () => {
                   tickFormatter={formatPSDValue}
                 />
                 <Tooltip 
-                  formatter={(value) => [formatPSDValue(value), 'PSD']}
-                  labelFormatter={(label) => `Frequency: ${label} Hz`}
+                  formatter={(value: number) => [formatPSDValue(value), 'PSD']}
+                  labelFormatter={(label: number) => `Frequency: ${label} Hz`}
                 />
                 <Legend />
                 <Area
@@ -587,8 +719,8 @@ const Equipment: React.FC = () => {
                   tickFormatter={formatPSDValue}
                 />
                 <Tooltip 
-                  formatter={(value) => [formatPSDValue(value), 'PSD']}
-                  labelFormatter={(label) => `Frequency: ${label} Hz`}
+                  formatter={(value: number) => [formatPSDValue(value), 'PSD']}
+                  labelFormatter={(label: number) => `Frequency: ${label} Hz`}
                 />
                 <Legend />
                 <Area
@@ -623,8 +755,8 @@ const Equipment: React.FC = () => {
               />
               <YAxis tick={{ fontSize: 12 }} />
               <Tooltip 
-                formatter={(value, name) => [value, name]}
-                labelFormatter={(label, payload) => {
+                formatter={(value: number, name: string) => [value, name]}
+                labelFormatter={(label: string, payload: any[]) => {
                   if (payload && payload[0]) {
                     return `Time: ${payload[0].payload.fullTime}`;
                   }
@@ -738,6 +870,13 @@ const Equipment: React.FC = () => {
             </ResponsiveContainer>
           </div>
         </div>
+      </div>
+
+      {/* Pied de page */}
+      <div className="text-center text-sm text-gray-500 py-4">
+        🏭 FactoryEYE - Système de Surveillance Industrielle | 
+        API: <span className={apiStatus === 'online' ? 'text-green-600' : 'text-red-600'}>{apiStatus}</span> | 
+        Dernière mise à jour: {lastUpdate.toLocaleString()}
       </div>
     </div>
   );
