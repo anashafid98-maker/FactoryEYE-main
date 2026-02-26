@@ -24,11 +24,49 @@ def get_connection():
             "Database=FactoryEYE;"
             "Trusted_Connection=yes;"
         )
-        print("✅ Connexion DB réussie")
         return conn
     except Exception as e:
         print(f"❌ Erreur connexion DB: {e}")
         return None
+
+def save_to_database(data_point):
+    """Sauvegarde un point de données dans la base"""
+    try:
+        conn = get_connection()
+        if not conn:
+            print("❌ Impossible de se connecter à la base pour sauvegarde")
+            return False
+            
+        cursor = conn.cursor()
+        
+        # Requête d'insertion
+        query = """
+        INSERT INTO dbo.COMPRESSEURDATA 
+        (timestamp, vibration_x, vibration_y, vibration_z, vx_rms, vy_rms, pressure, current_value, running)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        
+        cursor.execute(query, 
+            data_point['timestamp'],
+            data_point['vibration_x'],
+            data_point['vibration_y'], 
+            data_point['vibration_z'],
+            data_point['vx_rms'],
+            data_point['vy_rms'],
+            data_point['pressure'],
+            data_point['current_value'],
+            data_point['running']
+        )
+        
+        conn.commit()
+        conn.close()
+        
+        print(f"💾 Donnée sauvegardée dans la base: VX={data_point['vibration_x']:.4f}")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Erreur sauvegarde base de données: {e}")
+        return False
 
 def scan_historical_dates():
     """Scanne automatiquement les dates disponibles dans la base"""
@@ -183,20 +221,25 @@ def generate_historical_data(date_str, count=48):
     return simulated_data
 
 def realtime_data_generator():
-    """Générateur de données temps réel - 1 minute d'intervalle"""
+    """Générateur de données temps réel avec sauvegarde automatique"""
     global latest_data
     
     while True:
         try:
             new_data = generate_realtime_data()
+            
+            # Sauvegarder dans la base de données
+            save_success = save_to_database(new_data)
+            
             with data_lock:
                 latest_data.append(new_data)
                 
-                # Garder seulement les 120 dernières valeurs (2 heures)
+                # Garder seulement les 120 dernières valeurs en mémoire
                 if len(latest_data) > 120:
                     latest_data = latest_data[-120:]
             
-            print(f"🕐 [{datetime.now().strftime('%H:%M:%S')}] Donnée temps réel: "
+            status_icon = "💾" if save_success else "⚠️"
+            print(f"{status_icon} [{datetime.now().strftime('%H:%M:%S')}] Donnée temps réel: "
                   f"VX={new_data['vibration_x']:.4f}, "
                   f"P={new_data['pressure']:.1f} bar")
             
@@ -220,6 +263,49 @@ def historical_scanner():
         
         time.sleep(300)  # Rescan toutes les 5 minutes
 
+def database_initializer():
+    """Initialise la base de données si nécessaire"""
+    try:
+        conn = get_connection()
+        if conn:
+            cursor = conn.cursor()
+            
+            # Vérifier si la table existe
+            cursor.execute("""
+                SELECT COUNT(*) 
+                FROM INFORMATION_SCHEMA.TABLES 
+                WHERE TABLE_NAME = 'COMPRESSEURDATA'
+            """)
+            
+            table_exists = cursor.fetchone()[0] > 0
+            
+            if not table_exists:
+                print("📦 Création de la table COMPRESSEURDATA...")
+                # Créer la table si elle n'existe pas
+                cursor.execute("""
+                    CREATE TABLE dbo.COMPRESSEURDATA (
+                        id INT IDENTITY(1,1) PRIMARY KEY,
+                        timestamp DATETIME2,
+                        vibration_x FLOAT,
+                        vibration_y FLOAT,
+                        vibration_z FLOAT,
+                        vx_rms FLOAT,
+                        vy_rms FLOAT,
+                        pressure FLOAT,
+                        current_value FLOAT,
+                        running BIT
+                    )
+                """)
+                conn.commit()
+                print("✅ Table COMPRESSEURDATA créée avec succès")
+            else:
+                print("✅ Table COMPRESSEURDATA existe déjà")
+            
+            conn.close()
+            
+    except Exception as e:
+        print(f"❌ Erreur initialisation base de données: {e}")
+
 # ==================== ROUTES API ====================
 
 @app.route('/api/data', methods=['GET'])
@@ -238,15 +324,75 @@ def get_data():
                 print(f"✅ Retourne {len(latest_data)} données temps réel")
                 return jsonify(latest_data)
         else:
-            # Date historique = données simulées
-            historical_data = generate_historical_data(date_param, 48)
-            print(f"✅ Retourne {len(historical_data)} données historiques simulées")
+            # Date historique = données de la base
+            historical_data = get_historical_data_from_db(date_param)
+            print(f"✅ Retourne {len(historical_data)} données historiques")
             return jsonify(historical_data)
     else:
         # Pas de date = données temps réel
         with data_lock:
             print(f"✅ Retourne {len(latest_data)} données temps réel (défaut)")
             return jsonify(latest_data)
+
+def get_historical_data_from_db(date_str):
+    """Récupère les données historiques de la base de données"""
+    try:
+        conn = get_connection()
+        if not conn:
+            print(f"❌ Impossible de se connecter à la DB pour {date_str}")
+            return generate_historical_data(date_str, 48)
+            
+        cursor = conn.cursor()
+        query = """
+            SELECT timestamp, vibration_x, vibration_y, vibration_z, 
+                   vx_rms, vy_rms, pressure, current_value, running
+            FROM dbo.COMPRESSEURDATA 
+            WHERE CONVERT(date, timestamp) = ?
+            ORDER BY timestamp ASC
+        """
+        
+        print(f"🔍 Recherche données DB pour {date_str}...")
+        cursor.execute(query, date_str)
+        rows = cursor.fetchall()
+        historical_data = []
+        
+        print(f"📊 {len(rows)} enregistrements trouvés dans la base")
+        
+        for i, row in enumerate(rows):
+            # Générer les PSD pour chaque point de données
+            freqs_vx, psd_vx = generate_psd_from_vibration(row[1] if row[1] else 0.8)
+            freqs_vy, psd_vy = generate_psd_from_vibration(row[2] if row[2] else 0.7)
+            
+            data_point = {
+                "id": i + 1,
+                "timestamp": row[0].isoformat() if hasattr(row[0], 'isoformat') else str(row[0]),
+                "vibration_x": float(row[1]) if row[1] is not None else 0.8,
+                "vibration_y": float(row[2]) if row[2] is not None else 0.7,
+                "vibration_z": float(row[3]) if row[3] is not None else 0.3,
+                "vx_rms": float(row[4]) if row[4] is not None else 0.1,
+                "vy_rms": float(row[5]) if row[5] is not None else 0.1,
+                "pressure": float(row[6]) if row[6] is not None else 5.0,
+                "current_value": float(row[7]) if row[7] is not None else 10.0,
+                "running": bool(row[8]) if row[8] is not None else True,
+                "source": "database",
+                "is_simulation": False,
+                "spectrum_vx": {"freqs": freqs_vx.tolist(), "psd": psd_vx.tolist()},
+                "spectrum_vy": {"freqs": freqs_vy.tolist(), "psd": psd_vy.tolist()}
+            }
+            historical_data.append(data_point)
+        
+        conn.close()
+        
+        # Si pas de données dans la base, générer des données simulées
+        if not historical_data:
+            print(f"📝 Aucune donnée trouvée pour {date_str}, génération de données simulées")
+            historical_data = generate_historical_data(date_str, 48)
+        
+        return historical_data
+        
+    except Exception as e:
+        print(f"❌ Erreur récupération données historiques: {e}")
+        return generate_historical_data(date_str, 48)
 
 @app.route('/api/dates', methods=['GET'])
 def get_available_dates():
@@ -263,18 +409,16 @@ def get_available_dates():
             unique_dates.append(date)
     
     print(f"✅ Retourne {len(unique_dates)} dates")
-    return jsonify(unique_dates[:50])  # Limiter à 50 dates
+    return jsonify(unique_dates[:50])
 
 @app.route('/api/simulation/dates', methods=['GET'])
 def get_simulation_dates():
     """Alias pour /api/dates"""
-    print("📅 GET /api/simulation/dates (alias)")
     return get_available_dates()
 
 @app.route('/api/all-dates', methods=['GET'])
 def get_all_dates():
     """Autre alias pour la compatibilité"""
-    print("📅 GET /api/all-dates (alias)")
     return get_available_dates()
 
 @app.route('/api/latest', methods=['GET'])
@@ -283,7 +427,6 @@ def get_latest():
     with data_lock:
         if latest_data:
             last_point = latest_data[-1]
-            print(f"📊 Dernier point: VX={last_point['vibration_x']:.4f}")
             return jsonify(last_point)
         return jsonify({})
 
@@ -295,29 +438,46 @@ def health():
             "status": "healthy",
             "realtime_data_points": len(latest_data),
             "historical_dates_count": len(historical_dates),
-            "available_dates_sample": list(historical_dates)[:5],
+            "database_saving": "active",
             "timestamp": datetime.now().isoformat(),
             "today": datetime.now().strftime('%Y-%m-%d'),
             "refresh_rate": "60 seconds",
-            "mode": "realtime_and_historical"
+            "mode": "realtime_with_database_saving"
         })
 
-@app.route('/api/test', methods=['GET'])
-def test_endpoint():
-    """Endpoint de test"""
-    return jsonify({
-        "message": "API FactoryEYE fonctionne!",
-        "timestamp": datetime.now().isoformat(),
-        "endpoints": [
-            "/api/data",
-            "/api/dates",
-            "/api/simulation/dates", 
-            "/api/all-dates",
-            "/api/latest",
-            "/api/health",
-            "/api/test"
-        ]
-    })
+@app.route('/api/stats', methods=['GET'])
+def get_stats():
+    """Statistiques de la base de données"""
+    try:
+        conn = get_connection()
+        if not conn:
+            return jsonify({"error": "Database connection failed"})
+            
+        cursor = conn.cursor()
+        
+        # Nombre total d'enregistrements
+        cursor.execute("SELECT COUNT(*) FROM dbo.COMPRESSEURDATA")
+        total_records = cursor.fetchone()[0]
+        
+        # Date du premier enregistrement
+        cursor.execute("SELECT MIN(timestamp) FROM dbo.COMPRESSEURDATA")
+        first_record = cursor.fetchone()[0]
+        
+        # Date du dernier enregistrement
+        cursor.execute("SELECT MAX(timestamp) FROM dbo.COMPRESSEURDATA")
+        last_record = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        return jsonify({
+            "total_records": total_records,
+            "first_record": first_record.isoformat() if first_record else None,
+            "last_record": last_record.isoformat() if last_record else None,
+            "database_size": "active"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)})
 
 @app.route('/', methods=['GET'])
 def home():
@@ -330,7 +490,7 @@ def home():
     <!DOCTYPE html>
     <html>
     <head>
-        <title>FactoryEYE - API Complète</title>
+        <title>FactoryEYE - Avec Sauvegarde Base</title>
         <style>
             body {{ font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }}
             .container {{ max-width: 1000px; margin: 0 auto; }}
@@ -339,13 +499,14 @@ def home():
             .endpoint {{ background: #f8f9fa; padding: 12px; margin: 8px 0; border-left: 4px solid #007cba; }}
             .status {{ display: flex; gap: 20px; flex-wrap: wrap; }}
             .status-item {{ background: #e8f4fd; padding: 10px 15px; border-radius: 6px; }}
+            .feature {{ color: #059669; font-weight: bold; }}
         </style>
     </head>
     <body>
         <div class="container">
             <div class="header">
-                <h1>🏭 FactoryEYE - API Complète</h1>
-                <p><strong>Mode: Temps Réel + Historique</strong></p>
+                <h1>🏭 FactoryEYE - Système Complet</h1>
+                <p><span class="feature">💾 SAUVEGARDE AUTOMATIQUE BASE DE DONNÉES</span></p>
                 
                 <div class="status">
                     <div class="status-item">
@@ -358,42 +519,42 @@ def home():
                         <strong>📅 Dates historiques:</strong> {len(historical_dates)} dates
                     </div>
                     <div class="status-item">
-                        <strong>⏱️ Rafraîchissement:</strong> 60 secondes
+                        <strong>💾 Sauvegarde:</strong> Active
                     </div>
                 </div>
             </div>
             
             <div class="card">
-                <h2>🔗 Endpoints Disponibles</h2>
+                <h2>🎯 Fonctionnalités</h2>
+                <ul>
+                    <li><span class="feature">✅ Génération données temps réel</span> (toutes les 60s)</li>
+                    <li><span class="feature">✅ Sauvegarde automatique base de données</span></li>
+                    <li><span class="feature">✅ Consultation historique complet</span></li>
+                    <li><span class="feature">✅ Scan automatique des dates</span></li>
+                </ul>
+            </div>
+            
+            <div class="card">
+                <h2>🔗 Endpoints</h2>
                 
                 <div class="endpoint">
                     <strong>GET <a href="/api/data">/api/data</a></strong>
-                    <p>✅ <strong>Données temps réel</strong> (aujourd'hui)</p>
+                    <p>Données temps réel (sauvegardées automatiquement)</p>
                 </div>
                 
                 <div class="endpoint">
                     <strong>GET <a href="/api/dates">/api/dates</a></strong>
-                    <p>✅ <strong>Dates disponibles</strong> (aujourd'hui + historique)</p>
+                    <p>Dates disponibles (base de données + aujourd'hui)</p>
+                </div>
+                
+                <div class="endpoint">
+                    <strong>GET <a href="/api/stats">/api/stats</a></strong>
+                    <p>Statistiques de la base de données</p>
                 </div>
                 
                 <div class="endpoint">
                     <strong>GET <a href="/api/data?date={today}">/api/data?date={today}</a></strong>
-                    <p>Données pour aujourd'hui (explicite)</p>
-                </div>
-                
-                <div class="endpoint">
-                    <strong>GET <a href="/api/data?date=2025-11-21">/api/data?date=2025-11-21</a></strong>
-                    <p>Données historiques (exemple)</p>
-                </div>
-                
-                <div class="endpoint">
-                    <strong>GET <a href="/api/latest">/api/latest</a></strong>
-                    <p>Dernière mesure</p>
-                </div>
-                
-                <div class="endpoint">
-                    <strong>GET <a href="/api/health">/api/health</a></strong>
-                    <p>Statut du système</p>
+                    <p>Données d'aujourd'hui (depuis la base)</p>
                 </div>
             </div>
         </div>
@@ -402,8 +563,12 @@ def home():
     """
 
 if __name__ == '__main__':
-    print("🚀 Démarrage de l'API FactoryEYE Complète...")
+    print("🚀 Démarrage de FactoryEYE avec Sauvegarde Base de Données...")
     print("="*60)
+    
+    # Initialiser la base de données
+    print("📦 Initialisation de la base de données...")
+    database_initializer()
     
     # Scan initial des dates historiques
     print("🔍 Premier scan des dates historiques...")
@@ -411,9 +576,11 @@ if __name__ == '__main__':
     
     # Données initiales temps réel
     print("🔄 Génération des données temps réel initiales...")
-    for i in range(10):
-        latest_data.append(generate_realtime_data())
-        time.sleep(0.5)
+    for i in range(5):
+        new_data = generate_realtime_data()
+        latest_data.append(new_data)
+        save_to_database(new_data)  # Sauvegarder les données initiales
+        time.sleep(1)
     
     # Démarrer les threads
     realtime_thread = threading.Thread(target=realtime_data_generator, daemon=True)
@@ -423,23 +590,17 @@ if __name__ == '__main__':
     historical_thread.start()
     
     print("="*60)
-    print("✅ API COMPLÈTE DÉMARRÉE AVEC SUCCÈS!")
+    print("✅ SYSTÈME COMPLET DÉMARRÉ AVEC SUCCÈS!")
     print(f"📅 Aujourd'hui: {datetime.now().strftime('%Y-%m-%d')}")
-    print(f"📊 Données temps réel: {len(latest_data)} points initiaux")
+    print(f"📊 Données temps réel: {len(latest_data)} points")
     print(f"📅 Dates historiques: {len(historical_dates)} dates")
-    print("⏱️  Rafraîchissement temps réel: 60 secondes")
-    print("🔍 Scan historique: toutes les 5 minutes")
-    print("\n🌐 ENDPOINTS DISPONIBLES:")
+    print("💾 Sauvegarde automatique: ACTIVÉE")
+    print("⏱️  Rafraîchissement: 60 secondes")
+    print("\n🌐 ENDPOINTS:")
     print("   ✅ GET /api/data")
-    print("   ✅ GET /api/dates")
-    print("   ✅ GET /api/simulation/dates")
-    print("   ✅ GET /api/all-dates")
-    print("   ✅ GET /api/latest")
+    print("   ✅ GET /api/dates") 
+    print("   ✅ GET /api/stats")
     print("   ✅ GET /api/health")
-    print("\n🔗 URLs importantes:")
-    print("   http://localhost:5000/")
-    print("   http://localhost:5000/api/data")
-    print("   http://localhost:5000/api/dates")
     print("="*60)
     
     app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
