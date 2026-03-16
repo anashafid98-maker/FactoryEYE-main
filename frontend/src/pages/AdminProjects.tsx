@@ -26,30 +26,15 @@ const AdminProjects = () => {
     }
   ]);
 
-  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  
   const [editedProject, setEditedProject] = useState({
     name: '',
     status: '',
     team: '',
     deadline: '',
     progress: 0,
+    equipment: [] as { name: string; sensors: Sensor[] }[],
   });
-
-  const handleEdit = (index: number) => {
-    setEditingIndex(index);
-    setEditedProject({ ...projects[index] });
-  };
-
-  const handleSave = (index: number) => {
-    const updatedProjects = [...projects];
-    updatedProjects[index] = editedProject;
-    setProjects(updatedProjects);
-    setEditingIndex(null);
-  };
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>, field: string) => {
-    setEditedProject({ ...editedProject, [field]: e.target.value });
-  };
 
   return (
     <div className="p-6">
