@@ -26,4 +26,8 @@ public class ZoneService {
     public List<Zone> getAllZones() {
         return zoneRepository.findAll();
     }
+
+    public List<Zone> getZonesByProjectId(Long projectId) {
+        return zoneRepository.findByProjectId(projectId);
+    }
 }

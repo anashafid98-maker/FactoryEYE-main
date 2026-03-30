@@ -20,7 +20,7 @@ const Login = () => {
     setIsLoading(true);
 
     try {
-      const response = await fetch('http://10.190.50.107:8889/api/auth/login', {
+      const response = await fetch('http://localhost:8890/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(credentials),
@@ -45,7 +45,6 @@ const Login = () => {
       } else {
         navigate('/user-dashboard', { replace: true });
       }
-
     } catch (err) {
       localStorage.clear();
       setError(err instanceof Error ? err.message : 'Une erreur est survenue');

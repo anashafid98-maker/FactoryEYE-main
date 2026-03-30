@@ -1,10 +1,12 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import Sidebar from './components/Sidebar';
+import NavSidebar from './components/NavSidebar';
+import MaintenanceSidebar from './components/MaintenanceSidebar';
 import Overview from './pages/Overview';
 import UserDashboard from './pages/UserDashboard';
 import Projects from './pages/Projects';
 import AdminProjects from './pages/AdminProjects';
+import EquipmentTest from './pages/EquipmentTest';
 import Equipment from './pages/Equipment';
 import UserEquipment from './pages/UserEquipment';
 import Alerts from './pages/Alerts';
@@ -14,6 +16,7 @@ import Users from './pages/Users';
 import AddSensor from './pages/AddSensor';
 import ReportsExport from './pages/ReportsExport';
 import Header from './components/header';
+import ErrorBoundary from './components/ErrorBoundary';
 
 import './App.css';
 
@@ -21,6 +24,7 @@ const PrivateRoute = ({ children, requiredRole }: { children: React.ReactNode; r
   const [isDarkMode, setIsDarkMode] = React.useState(() => localStorage.getItem("theme") === "dark");
   const isAuthenticated = localStorage.getItem('isAuthenticated') === 'true';
   const userRole = localStorage.getItem('role');
+  const [isMaintenanceOpen, setIsMaintenanceOpen] = React.useState(false);
 
   React.useEffect(() => {
     document.documentElement.classList.toggle("dark", isDarkMode);
@@ -32,8 +36,9 @@ const PrivateRoute = ({ children, requiredRole }: { children: React.ReactNode; r
   return (
     <div className="min-h-screen bg-gray-100 dark:bg-[#0f172a] text-black dark:text-white flex flex-col">
       <Header isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode} />
-      <div className="flex flex-1">
-        <Sidebar />
+      <div className="flex flex-1 min-h-[calc(100vh-52px)]">
+        <NavSidebar onOpenMaintenance={() => setIsMaintenanceOpen(true)} />
+        <MaintenanceSidebar isOpen={isMaintenanceOpen} onClose={() => setIsMaintenanceOpen(false)} />
         <main className="flex-1 overflow-y-auto p-4">{children}</main>
       </div>
     </div>
@@ -61,8 +66,11 @@ function App() {
         }/>
         <Route path="/equipment" element={
           <PrivateRoute requiredRole="ADMIN">
-            <Equipment />
+            <ErrorBoundary>
+              <Equipment />
+            </ErrorBoundary>
           </PrivateRoute>
+
         }/>
         <Route path="/admin-projects" element={
           <PrivateRoute requiredRole="ADMIN">

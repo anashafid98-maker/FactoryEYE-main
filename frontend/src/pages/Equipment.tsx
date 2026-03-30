@@ -4,6 +4,7 @@ import {
   ResponsiveContainer,
   LineChart,
   Line,
+import ReactECharts from "echarts-for-react";
   CartesianGrid,
   XAxis,
   YAxis,

@@ -28,3 +28,24 @@ export interface TimeRange {
   start: Date;
   end: Date;
 }
+
+// PLC Data types from plc_to_spl.py
+export interface PLCData {
+  timestamp: string;
+  vibration_x: number;
+  current_value: number;
+  pressure: number;
+  vx_rms: number;
+  psd_band: number;
+}
+
+export interface PLCDataPoint {
+  time: string;
+  fullTime: string;
+  timestamp: number;
+  vibration_x: number;
+  current_value: number;
+  pressure: number;
+  vx_rms: number;
+  psd_band: number;
+}

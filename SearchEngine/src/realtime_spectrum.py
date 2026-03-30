@@ -423,12 +423,20 @@ def get_all_dates():
 
 @app.route('/api/latest', methods=['GET'])
 def get_latest():
-    """Dernière mesure"""
+    """Dernière mesure - récupère depuis la base de données"""
+    # Try to get latest from database first
+    db_data = get_latest_from_db(1)
+    
+    if db_data and len(db_data) > 0:
+        print(f"✅ Retourne dernière mesure depuis la base de données")
+        return jsonify(db_data[0])
+    
+    # Fallback to in-memory data
     with data_lock:
         if latest_data:
             last_point = latest_data[-1]
             return jsonify(last_point)
-        return jsonify({})
+    return jsonify({})
 
 @app.route('/api/health', methods=['GET'])
 def health():
@@ -444,6 +452,144 @@ def health():
             "refresh_rate": "60 seconds",
             "mode": "realtime_with_database_saving"
         })
+
+def get_latest_from_db(limit=512):
+    """Récupère les dernières données de la base de données"""
+    try:
+        conn = get_connection()
+        if not conn:
+            return []
+        
+        cursor = conn.cursor()
+        query = f"""
+            SELECT TOP ({limit}) 
+                id, timestamp, vibration_x, vibration_y, vibration_z,
+                vx_rms, vy_rms, pressure, current_value, running
+            FROM dbo.COMPRESSEURDATA
+            ORDER BY timestamp DESC
+        """
+        
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        
+        data = []
+        for row in rows:
+            # Generate PSD from vibration data
+            freqs_vx, psd_vx = generate_psd_from_vibration(row[2] if row[2] else 0.8)
+            freqs_vy, psd_vy = generate_psd_from_vibration(row[3] if row[3] else 0.7)
+            
+            data_point = {
+                "id": row[0],
+                "timestamp": row[1].isoformat() if hasattr(row[1], 'isoformat') else str(row[1]),
+                "vibration_x": float(row[2]) if row[2] is not None else 0.0,
+                "vibration_y": float(row[3]) if row[3] is not None else 0.0,
+                "vibration_z": float(row[4]) if row[4] is not None else 0.0,
+                "vx_rms": float(row[5]) if row[5] is not None else 0.0,
+                "vy_rms": float(row[6]) if row[6] is not None else 0.0,
+                "pressure": float(row[7]) if row[7] is not None else 0.0,
+                "current_value": float(row[8]) if row[8] is not None else 0.0,
+                "running": bool(row[9]) if row[9] is not None else True,
+                "source": "database",
+                "is_simulation": False,
+                "spectrum_vx": {"freqs": freqs_vx.tolist(), "psd": psd_vx.tolist()},
+                "spectrum_vy": {"freqs": freqs_vy.tolist(), "psd": psd_vy.tolist()}
+            }
+            data.append(data_point)
+        
+        conn.close()
+        
+        # Reverse to get chronological order
+        return list(reversed(data))
+        
+    except Exception as e:
+        print(f"❌ Erreur récupération données base: {e}")
+        return []
+
+@app.route('/api/timeseries', methods=['GET'])
+def get_timeseries():
+    """
+    Endpoint pour les données de série temporelle - COMPATIBLE AVEC LE FRONTEND
+    Params: n = nombre de points (défaut 200, max 5000)
+    """
+    n = request.args.get('n', '200')
+    try:
+        n = int(n)
+        n = max(1, min(n, 5000))
+    except ValueError:
+        n = 200
+    
+    # Try to get data from database first (real collected data)
+    db_data = get_latest_from_db(n)
+    
+    if db_data and len(db_data) > 0:
+        print(f"✅ Retourne {len(db_data)} données depuis la base de données")
+        return jsonify({
+            "ok": True,
+            "count": len(db_data),
+            "data": db_data
+        })
+    
+    # Fallback to in-memory data if database is empty
+    with data_lock:
+        timeseries_data = latest_data[-n:] if len(latest_data) >= n else latest_data
+    
+    print(f"⚠️ Base de données vide, retourne {len(timeseries_data)} données simulées")
+    return jsonify({
+        "ok": True,
+        "count": len(timeseries_data),
+        "data": timeseries_data
+    })
+
+@app.route('/api/historical', methods=['GET'])
+def get_historical():
+    """
+    Endpoint pour les données historiques - COMPATIBLE AVEC LE FRONTEND
+    Params:
+      date = YYYY-MM-DD (requis)
+      start = heure de début HH:MM (optionnel)
+      end = heure de fin HH:MM (optionnel)
+      limit = nombre max de points (optionnel, défaut 5000)
+    """
+    date_str = request.args.get('date')
+    if not date_str:
+        return jsonify({"ok": False, "error": "date parameter is required"}), 400
+    
+    start_time = request.args.get('start', '00:00')
+    end_time = request.args.get('end', '23:59')
+    limit = request.args.get('limit', '5000')
+    
+    try:
+        limit = int(limit)
+        limit = max(1, min(limit, 10000))
+    except ValueError:
+        limit = 5000
+    
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    
+    # Si c'est aujourd'hui, retourner les données temps réel
+    if date_str == today_str:
+        with data_lock:
+            historical_data = latest_data[-limit:] if len(latest_data) >= limit else latest_data
+        return jsonify({
+            "ok": True,
+            "date": date_str,
+            "count": len(historical_data),
+            "data": historical_data
+        })
+    
+    # Sinon, récupérer de la base de données
+    historical_data = get_historical_data_from_db(date_str)
+    
+    # Limiter le nombre de résultats
+    if len(historical_data) > limit:
+        historical_data = historical_data[-limit:]
+    
+    return jsonify({
+        "ok": True,
+        "date": date_str,
+        "count": len(historical_data),
+        "data": historical_data
+    })
 
 @app.route('/api/stats', methods=['GET'])
 def get_stats():

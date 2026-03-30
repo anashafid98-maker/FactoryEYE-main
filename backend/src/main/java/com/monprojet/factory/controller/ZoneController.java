@@ -2,8 +2,10 @@ package com.monprojet.factory.controller;
 
 import com.monprojet.factory.dto.ZoneDTO;
 import com.monprojet.factory.entity.Equipment;
+import com.monprojet.factory.entity.Project;
 import com.monprojet.factory.entity.Zone;
 import com.monprojet.factory.service.ZoneService;
+import com.monprojet.factory.service.ProjectService;
 import com.monprojet.factory.repository.ZoneRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -21,6 +23,8 @@ public class ZoneController {
     private ZoneRepository zoneRepository;
     @Autowired
     private ZoneService zoneService;
+    @Autowired
+    private ProjectService projectService;
 
     @PostMapping
     public ResponseEntity<?> createZone(@RequestBody ZoneDTO zoneDTO) { // Retrait de @Valid
@@ -29,6 +33,14 @@ public class ZoneController {
             zone.setZoneName(zoneDTO.getZoneName());
             zone.setDescription(zoneDTO.getDescription());
             zone.setLocation(zoneDTO.getLocation());
+
+            // Set project if projectId is provided
+            if (zoneDTO.getProjectId() != null) {
+                Project project = projectService.getProjectById(zoneDTO.getProjectId());
+                if (project != null) {
+                    zone.setProject(project);
+                }
+            }
 
             // Création des équipements avec valeurs par défaut
             zoneDTO.getEquipment().forEach(equipmentName -> {
@@ -46,10 +58,17 @@ public class ZoneController {
             return ResponseEntity.badRequest().body("Erreur SQL : " + e.getCause().getMessage());
         }
     }
-    // Les autres méthodes (GET, DELETE) restent inchangées
+    
+    // Get all zones
     @GetMapping
     public List<Zone> getAllZones() {
         return zoneService.getAllZones();
+    }
+
+    // Get zones by project ID
+    @GetMapping("/project/{projectId}")
+    public List<Zone> getZonesByProjectId(@PathVariable Long projectId) {
+        return zoneService.getZonesByProjectId(projectId);
     }
 
     @DeleteMapping("/{zoneId}/equipment/{equipmentName}")

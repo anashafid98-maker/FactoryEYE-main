@@ -1,0 +1,7 @@
+llnumpy
+scipy
+pyodbc
+flask
+flask_cors
+opcua
+cryptography

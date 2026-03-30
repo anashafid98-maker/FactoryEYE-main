@@ -2,7 +2,7 @@ import time
 import random
 from datetime import datetime
 import numpy as np
-import joblib
+from joblib import Memory
 import pyodbc
 import math, random
 from config import CONN_STR, PAUSE_S, PATH_MODEL

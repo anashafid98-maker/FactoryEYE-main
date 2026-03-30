@@ -6,6 +6,7 @@ public class ZoneDTO {
     private String zoneName;
     private String description;
     private String location;
+    private Long projectId;
     private List<String> equipment; // Liste simplifiée de noms d'équipements
 
     // Getters & Setters
@@ -15,6 +16,8 @@ public class ZoneDTO {
     public void setDescription(String description) { this.description = description; }
     public String getLocation() { return location; }
     public void setLocation(String location) { this.location = location; }
+    public Long getProjectId() { return projectId; }
+    public void setProjectId(Long projectId) { this.projectId = projectId; }
     public List<String> getEquipment() { return equipment; }
     public void setEquipment(List<String> equipment) { this.equipment = equipment; }
 }

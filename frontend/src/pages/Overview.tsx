@@ -16,7 +16,6 @@ import {
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 
-// -------------------- INTERFACES --------------------
 interface Equipment {
   id: number;
   name: string;

@@ -10,4 +10,6 @@ public interface ZoneRepository extends JpaRepository<Zone, Long> {
     @EntityGraph(attributePaths = {"equipment"})
     @Override
     List<Zone> findAll();
+
+    List<Zone> findByProjectId(Long projectId);
 }
